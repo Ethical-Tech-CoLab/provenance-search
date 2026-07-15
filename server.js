@@ -12,9 +12,10 @@ const zlib = require('zlib');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const sharp = require('sharp');
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
@@ -380,7 +381,13 @@ app.post('/api/identify', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image provided.' });
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
   try {
-    const base64 = req.file.buffer.toString('base64');
+    let imageBuffer = req.file.buffer;
+    let imageMimeType = req.file.mimetype || 'image/jpeg';
+    if (imageBuffer.length > 4 * 1024 * 1024) {
+      imageBuffer = await sharp(imageBuffer).resize(1500, 1500, { fit: 'inside' }).jpeg({ quality: 85 }).toBuffer();
+      imageMimeType = 'image/jpeg';
+    }
+    const base64 = imageBuffer.toString('base64');
     const prompt = `You are an art and artifact identification assistant. Look at this image and identify the artwork or object if you recognize it, or describe your best guess of its title, artist, period, and medium based on visual style if you do not recognize it exactly.
 
 Return ONLY raw JSON (no markdown, no backticks) with this exact shape:
@@ -390,7 +397,7 @@ confidence is a number from 0 to 1 reflecting how sure you are of the identifica
 
     const text = await callGemini([
       { text: prompt },
-      { inline_data: { mime_type: req.file.mimetype || 'image/jpeg', data: base64 } }
+      { inline_data: { mime_type: imageMimeType, data: base64 } }
     ], 500);
     console.log('Gemini raw response:', text.substring(0, 300));
 
@@ -476,6 +483,13 @@ app.post('/api/verify', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'Image too large. Please use an image under 20MB.' });
+  }
+  next(err);
 });
 
 const PORT = process.env.PORT || 3000;
