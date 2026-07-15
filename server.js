@@ -62,16 +62,39 @@ function extractJson(text) {
   }
 }
 
-async function callGemini(parts, maxOutputTokens) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-goog-api-key': GEMINI_API_KEY },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { temperature: 0.1, maxOutputTokens }
-    })
-  });
+async function callGemini(parts, maxOutputTokens, isRetry = false) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  let r;
+  try {
+    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-goog-api-key': GEMINI_API_KEY },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: { temperature: 0.1, maxOutputTokens }
+      }),
+      signal: controller.signal
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Gemini request timed out after 30 seconds.');
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   const data = await r.json();
+  const isOverloaded = r.status === 503 || /high demand|overloaded/i.test(data.error?.message || '');
+
+  if (isOverloaded) {
+    if (!isRetry) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return callGemini(parts, maxOutputTokens, true);
+    }
+    throw new Error('Gemini is temporarily busy. Please try again in a moment.');
+  }
+
   if (data.error) throw new Error(data.error.message || 'Gemini API error');
   return extractGeminiText(data);
 }
