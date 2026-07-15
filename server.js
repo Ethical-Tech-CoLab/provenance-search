@@ -376,6 +376,7 @@ Set "isGeneralKnowledge": false on every entry that came from the sources above.
 // ── ROUTES ──
 
 app.post('/api/identify', upload.single('image'), async (req, res) => {
+  console.log('Identify request received, image size:', req.file?.size || 0);
   if (!req.file) return res.status(400).json({ error: 'No image provided.' });
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
   try {
@@ -391,8 +392,10 @@ confidence is a number from 0 to 1 reflecting how sure you are of the identifica
       { text: prompt },
       { inline_data: { mime_type: req.file.mimetype || 'image/jpeg', data: base64 } }
     ], 500);
+    console.log('Gemini raw response:', text.substring(0, 300));
 
     const parsed = extractJson(text);
+    console.log('Parsed artwork:', JSON.stringify(parsed));
     if (!parsed) return res.status(502).json({ error: 'Could not parse an identification from Gemini.', raw: text });
     res.json(parsed);
   } catch (e) {
