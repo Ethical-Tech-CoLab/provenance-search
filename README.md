@@ -4,6 +4,10 @@ Looks up an artwork's ownership history across free public sources and emits a
 provenance passport with a confidence score computed by a fixed algorithm
 (not by the AI).
 
+## Live Demo
+
+**[https://provenance-search-production.up.railway.app](https://provenance-search-production.up.railway.app)**
+
 ## Architecture
 
 - `index.html` — static frontend (text form, image upload, camera capture)
