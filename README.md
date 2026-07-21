@@ -1,5 +1,8 @@
 # Arts & Artifacts — Provenance Intelligence
 
+**[Live site](https://ethical-tech-colab.github.io/provenance-search/)** ·
+**[Research report](Provenance-Search-Paper.md)** (plain-language, non-technical)
+
 Looks up an artwork's ownership history across free public sources and emits a
 provenance passport with a confidence score computed by a fixed algorithm
 (not by the AI).
