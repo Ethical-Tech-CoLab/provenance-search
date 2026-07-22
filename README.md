@@ -132,3 +132,19 @@ Score is clamped to 0–100%.
 `.env` and `.env.save` contain live API keys and are excluded via
 `.gitignore`. If either file was ever committed or shared, rotate the keys
 before relying on this project further.
+
+---
+
+## Peer Review
+
+An independent academic peer review of this report is available in [`peer-review/`](peer-review/) ([Word](peer-review/provenance-search-Peer-Review.docx) &middot; [Markdown](peer-review/provenance-search-Peer-Review.md)).
+
+**Recommendation:** Major revisions
+
+**What the review found:**
+
+- No evaluation anywhere: objectives (S3) are never measured, only three cherry-picked snapshots (S11.2), with weights and timeline conceded unvalidated (S10.4/S10.5).
+- The headline claim that the score cannot drift with a model's mood is overstated: its dominant inputs are model-produced and unchecked (S5.4/S10.5).
+- The contribution is unpositioned against prior computational-provenance work; the tooling gap is asserted, citing only an internal sibling repo (S2.3/S2.5).
+
+**Noted strength:** Exemplary candor (twelve located limitations in S10) and a genuinely sound, model-proof deterministic watchlist rule (S5.3).
