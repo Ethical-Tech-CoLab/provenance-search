@@ -135,6 +135,34 @@ const TAVILY_DOMAINS = [
   'fbi.gov', 'ifar.org', 'wikipedia.org'
 ];
 const WATCHLIST_DOMAINS = ['interpol.int', 'artloss.com', 'lostart.de', 'lootedart.com', 'fbi.gov'];
+
+// Exact-or-subdomain match against the watchlist. A substring test would let
+// `interpol.int.evil.com` masquerade as a stolen-art registry, so the hostname is
+// parsed and compared as a registrable suffix.
+function normalizeHostname(value) {
+  if (typeof value !== 'string') return '';
+  let host = value.trim().toLowerCase();
+  if (!host) return '';
+  if (host.includes('/') || host.includes(':')) {
+    try { host = new URL(host).hostname.toLowerCase(); } catch { return ''; }
+  }
+  return host.replace(/\.+$/, '');
+}
+
+function isWatchlistHost(value) {
+  const host = normalizeHostname(value);
+  if (!host) return false;
+  return WATCHLIST_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
+}
+
+// A hit is on the watchlist only if its actual URL host is — `domain` is a
+// derived convenience field and is only trusted when the URL cannot be parsed.
+function isWatchlistHit(hit) {
+  if (!hit) return false;
+  const fromUrl = normalizeHostname(hit.url);
+  if (fromUrl) return isWatchlistHost(fromUrl);
+  return isWatchlistHost(hit.domain);
+}
 const WIKIMEDIA_UA = 'arts-and-artifacts-provenance-agent/1.0 (https://github.com/; contact via repo)';
 
 // ── MOMA LOCAL DATASET (bundled, gzip-compressed) ──
@@ -393,7 +421,7 @@ async function searchTavily(title, artist) {
       try { hostname = new URL(o.url).hostname.replace(/^www\./, ''); } catch {}
       return { title: o.title, snippet: (o.content || '').slice(0, 600), url: o.url, domain: hostname };
     });
-    const hasWatchlistHit = hits.some(h => WATCHLIST_DOMAINS.some(d => h.domain.includes(d)));
+    const hasWatchlistHit = hits.some(isWatchlistHit);
     const response = hasWatchlistHit ? 'flagged' : (hits.length ? 'clear' : 'not_found');
     return { name, domain, response, hits };
   } catch (e) {
@@ -403,12 +431,17 @@ async function searchTavily(title, artist) {
 
 // ── SCORING (algorithmic, not AI) ──
 
-function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesConsulted, valuationAssessment }) {
+// A confirmed hit on a stolen-art / loss registry is definitive, not just one more
+// deduction: it caps the confidence score at this ceiling regardless of everything else.
+const WATCHLIST_SCORE_CEILING = 5;
+
+function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesConsulted, valuationAssessment, watchlistHit }) {
   let score = 100;
   const gapCount = (provenanceTimeline || []).filter(e => e.isGap).length;
   score -= gapCount * 30;
 
-  const verifiedCount = (authoritiesConsulted || []).filter(a => a.response !== 'not_found').length;
+  // Only a 'clear' response counts as verification — 'flagged' is the opposite of one.
+  const verifiedCount = (authoritiesConsulted || []).filter(a => a.response === 'clear').length;
   if (verifiedCount < 3) score -= 25;
 
   const highFlagCount = (riskFlags || []).filter(f => f.severity === 'high').length;
@@ -417,6 +450,10 @@ function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesCons
   if (valuationAssessment?.anomalous) score -= 10;
 
   score = Math.max(0, Math.min(100, score));
+
+  const flaggedByAuthority = (authoritiesConsulted || []).some(a => a.response === 'flagged');
+  if (watchlistHit || flaggedByAuthority) score = Math.min(score, WATCHLIST_SCORE_CEILING);
+
   return score / 100;
 }
 
@@ -652,8 +689,11 @@ app.post('/api/verify', protectApi, async (req, res) => {
 
     const riskFlags = [...(draft.riskFlags || [])];
     const seenUrls = new Set(riskFlags.map(f => f.sourceUrl).filter(Boolean));
+    let watchlistHit = false;
     for (const h of tavily.hits) {
-      if (WATCHLIST_DOMAINS.some(d => h.domain?.includes(d)) && !seenUrls.has(h.url)) {
+      if (!isWatchlistHit(h)) continue;
+      watchlistHit = true;
+      if (!seenUrls.has(h.url)) {
         riskFlags.push({ type: 'watchlist_match', severity: 'high', detail: `Match found on ${h.domain}: "${h.title}"`, sourceUrl: h.url });
         seenUrls.add(h.url);
       }
@@ -677,7 +717,8 @@ app.post('/api/verify', protectApi, async (req, res) => {
       provenanceTimeline,
       riskFlags,
       authoritiesConsulted,
-      valuationAssessment
+      valuationAssessment,
+      watchlistHit
     });
 
     const passport = {
