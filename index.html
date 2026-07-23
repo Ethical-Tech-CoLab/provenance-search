@@ -1149,6 +1149,26 @@ async function runVerify(){
 function showErr(m){const e=document.getElementById('errMsg');e.textContent=m;e.style.display='block'}
 function hideErr(){document.getElementById('errMsg').style.display='none'}
 
+// ── OUTPUT ESCAPING ──
+// Passport fields come from the LLM and from third-party registry pages, so
+// every one of them is attacker-influenceable text landing in innerHTML. All
+// interpolated values must go through esc(); every URL through safeUrl(),
+// which allows only http(s) and therefore blocks javascript: and data:
+// payloads.
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+function safeUrl(u){
+  const s = String(u ?? '').trim();
+  if(!s) return '';
+  try{
+    const p = new URL(s, window.location.origin);
+    return (p.protocol === 'http:' || p.protocol === 'https:') ? esc(p.href) : '';
+  }catch(_){ return ''; }
+}
+
 // ── STATUS / SCORE ──
 function scoreStatus(d){
   const flags=d.riskFlags||[];
@@ -1185,13 +1205,14 @@ function renderFieldReport(d){
 
   let tl='';
   for(const e of(d.provenanceTimeline||[])){
+    const eu=safeUrl(e.sourceUrl);
     tl+=`<div class="tl-entry">
-      <div class="tl-yr">${e.period||''}</div>
+      <div class="tl-yr">${esc(e.period||'')}</div>
       <div>
-        <div class="tl-name${e.isGap?' gap':''}">${e.owner||'Unknown'}${e.isGap?'<span class="gap-tag">custody gap</span>':''}</div>
-        ${e.gapNote?`<div class="tl-note">${e.gapNote}</div>`:''}
-        ${e.note?`<div class="tl-note">${e.note}</div>`:''}
-        ${e.sourceUrl?`<div class="tl-src">&#9632; <a href="${e.sourceUrl}" target="_blank">${e.sourceAuthority||e.sourceUrl}</a></div>`:e.sourceAuthority?`<div class="tl-src">&#9632; ${e.sourceAuthority}</div>`:''}
+        <div class="tl-name${e.isGap?' gap':''}">${esc(e.owner||'Unknown')}${e.isGap?'<span class="gap-tag">custody gap</span>':''}</div>
+        ${e.gapNote?`<div class="tl-note">${esc(e.gapNote)}</div>`:''}
+        ${e.note?`<div class="tl-note">${esc(e.note)}</div>`:''}
+        ${eu?`<div class="tl-src">&#9632; <a href="${eu}" target="_blank" rel="noopener noreferrer">${esc(e.sourceAuthority||e.sourceUrl)}</a></div>`:e.sourceAuthority?`<div class="tl-src">&#9632; ${esc(e.sourceAuthority)}</div>`:''}
       </div>
     </div>`;
   }
@@ -1201,10 +1222,10 @@ function renderFieldReport(d){
     <div class="result-head ${fs.cls}">
       <div class="result-score">${Math.round(sc*100)}<span>%</span></div>
       <div class="result-score-lbl">Provenance confidence</div>
-      <div class="result-artwork">${d.artwork?.title||'Unknown'} — ${d.artwork?.artist||''}</div>
+      <div class="result-artwork">${esc(d.artwork?.title||'Unknown')} — ${esc(d.artwork?.artist||'')}</div>
     </div>
     <div class="source-disclaimer">⚠️ This tool searches the public websites of INTERPOL, FBI, and Art Loss Register — not their restricted databases. A negative result is not a clearance. Professional due diligence requires direct database access.</div>
-    <div class="fm-statusline">${fs.statusLine}</div>
+    <div class="fm-statusline">${esc(fs.statusLine)}</div>
     <div class="fm-actions">
       <button type="button" class="fm-action-btn ${fs.cls}">${fs.emoji} ${fs.action}</button>
     </div>
@@ -1257,13 +1278,14 @@ function renderFullReport(d){
   // timeline
   let tl='';
   for(const e of(d.provenanceTimeline||[])){
+    const eu=safeUrl(e.sourceUrl);
     tl+=`<div class="tl-entry">
-      <div class="tl-yr">${e.period||''}</div>
+      <div class="tl-yr">${esc(e.period||'')}</div>
       <div>
-        <div class="tl-name${e.isGap?' gap':''}">${e.owner||'Unknown'}${e.isGap?'<span class="gap-tag">custody gap</span>':''}${e.isGeneralKnowledge?'<span class="gk-tag">general knowledge</span>':''}</div>
-        ${e.gapNote?`<div class="tl-note">${e.gapNote}</div>`:''}
-        ${e.note?`<div class="tl-note">${e.note}</div>`:''}
-        ${e.sourceUrl?`<div class="tl-src">&#9632; <a href="${e.sourceUrl}" target="_blank">${e.sourceAuthority||e.sourceUrl}</a></div>`:e.sourceAuthority?`<div class="tl-src">&#9632; ${e.sourceAuthority}</div>`:''}
+        <div class="tl-name${e.isGap?' gap':''}">${esc(e.owner||'Unknown')}${e.isGap?'<span class="gap-tag">custody gap</span>':''}${e.isGeneralKnowledge?'<span class="gk-tag">general knowledge</span>':''}</div>
+        ${e.gapNote?`<div class="tl-note">${esc(e.gapNote)}</div>`:''}
+        ${e.note?`<div class="tl-note">${esc(e.note)}</div>`:''}
+        ${eu?`<div class="tl-src">&#9632; <a href="${eu}" target="_blank" rel="noopener noreferrer">${esc(e.sourceAuthority||e.sourceUrl)}</a></div>`:e.sourceAuthority?`<div class="tl-src">&#9632; ${esc(e.sourceAuthority)}</div>`:''}
       </div>
     </div>`;
   }
@@ -1272,9 +1294,10 @@ function renderFullReport(d){
   // flags
   let flags='';
   for(const f of(d.riskFlags||[])){
-    flags+=`<div class="flag ${f.severity}">
-      <span class="fsev">${f.severity}</span>
-      <div class="ftext"><strong>${(f.type||'').replace(/_/g,' ')}</strong> — ${f.detail}${f.sourceUrl?` <a href="${f.sourceUrl}" target="_blank">[source]</a>`:''}</div>
+    const fu=safeUrl(f.sourceUrl);
+    flags+=`<div class="flag ${esc(f.severity)}">
+      <span class="fsev">${esc(f.severity)}</span>
+      <div class="ftext"><strong>${esc((f.type||'').replace(/_/g,' '))}</strong> — ${esc(f.detail)}${fu?` <a href="${fu}" target="_blank" rel="noopener noreferrer">[source]</a>`:''}</div>
     </div>`;
   }
   if(!flags)flags='<div class="no-flags">No risk flags identified.</div>';
@@ -1286,22 +1309,23 @@ function renderFullReport(d){
     val=`<div>
       <div class="p-section-title">Valuation assessment</div>
       <div class="val-grid">
-        <div class="val-item"><span>Reported price</span><div class="vv">${va.providedPrice}</div></div>
-        ${va.expectedRange?`<div class="val-item"><span>Expected range</span><div class="vv">${va.expectedRange}</div></div>`:''}
+        <div class="val-item"><span>Reported price</span><div class="vv">${esc(va.providedPrice)}</div></div>
+        ${va.expectedRange?`<div class="val-item"><span>Expected range</span><div class="vv">${esc(va.expectedRange)}</div></div>`:''}
         <div class="val-item"><span>Anomalous</span><div class="vv" style="color:${va.anomalous?'var(--red)':'var(--green)'}">${va.anomalous?'Yes':'No'}</div></div>
       </div>
-      ${va.note?`<div class="val-note">${va.note}</div>`:''}
+      ${va.note?`<div class="val-note">${esc(va.note)}</div>`:''}
     </div>`;
   }
 
   // authorities
   let auths='';
   for(const a of(d.authoritiesConsulted||[])){
+    const au=safeUrl(a.sourceUrl);
     auths+=`<div class="auth-card">
-      <div class="auth-name">${a.name}</div>
-      <div class="auth-domain">${a.domain}</div>
-      <div class="auth-status s-${a.response}">${(a.response||'').replace(/_/g,' ')}</div>
-      ${a.sourceUrl?`<a class="auth-link" href="${a.sourceUrl}" target="_blank">view source →</a>`:''}
+      <div class="auth-name">${esc(a.name)}</div>
+      <div class="auth-domain">${esc(a.domain)}</div>
+      <div class="auth-status s-${esc(a.response)}">${esc((a.response||'').replace(/_/g,' '))}</div>
+      ${au?`<a class="auth-link" href="${au}" target="_blank" rel="noopener noreferrer">view source →</a>`:''}
     </div>`;
   }
 
@@ -1309,11 +1333,11 @@ function renderFullReport(d){
     <div class="result-head ${status.cls}">
       <div class="result-score">${Math.round(sc*100)}<span>%</span></div>
       <div class="result-score-lbl">Provenance confidence</div>
-      <div class="result-status">${status.text}</div>
-      <div class="result-artwork">${d.artwork?.title||'Unknown'} — ${d.artwork?.artist||''}</div>
+      <div class="result-status">${esc(status.text)}</div>
+      <div class="result-artwork">${esc(d.artwork?.title||'Unknown')} — ${esc(d.artwork?.artist||'')}</div>
     </div>
     <div class="source-disclaimer">⚠️ This tool searches the public websites of INTERPOL, FBI, and Art Loss Register — not their restricted databases. A negative result is not a clearance. Professional due diligence requires direct database access.</div>
-    ${d.confidenceRationale?`<div class="result-rationale">${d.confidenceRationale}</div>`:''}
+    ${d.confidenceRationale?`<div class="result-rationale">${esc(d.confidenceRationale)}</div>`:''}
     <div class="passport-body">
       <details class="tl-details" ${tlCount<=2?'open':''}>
         <summary>
@@ -1337,16 +1361,16 @@ function renderFullReport(d){
             <div class="auths">${auths}</div>
           </div>
           <div class="sig-block">
-            <strong>Signed by:</strong> ${d.passportSignature?.signedBy||''} &nbsp;·&nbsp; <strong>Date:</strong> ${new Date(now).toUTCString()}<br/>
-            <strong>Integrity hash:</strong> ${d.passportSignature?.integrityHash||''}<br/>
-            <strong>Attestation:</strong> ${d.passportSignature?.attestation||''}
+            <strong>Signed by:</strong> ${esc(d.passportSignature?.signedBy||'')} &nbsp;·&nbsp; <strong>Date:</strong> ${new Date(now).toUTCString()}<br/>
+            <strong>Integrity hash:</strong> ${esc(d.passportSignature?.integrityHash||'')}<br/>
+            <strong>Attestation:</strong> ${esc(d.passportSignature?.attestation||'')}
           </div>
           <div class="raw-block">
             <div class="raw-head">
               <span>Raw JSON Passport</span>
               <button class="raw-copy" id="rawCopyBtn" onclick="copyRaw()">Copy JSON</button>
             </div>
-            <pre id="rawJson">${JSON.stringify(d,null,2)}</pre>
+            <pre id="rawJson">${esc(JSON.stringify(d,null,2))}</pre>
           </div>
         </div>
       </details>
