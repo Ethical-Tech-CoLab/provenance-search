@@ -646,6 +646,10 @@ confidence is a number from 0 to 1 reflecting how sure you are of the identifica
     if (!parsed) return res.status(502).json({ error: 'Could not parse an identification from Gemini.', raw: text });
     res.json(parsed);
   } catch (e) {
+    if (/rate limit|quota|temporarily busy/i.test(e.message || '')) {
+      console.log('Gemini rate limited — image identification unavailable.');
+      return res.status(503).json({ error: 'Image identification temporarily unavailable — Gemini quota exceeded. Please try again later or describe the artwork manually.' });
+    }
     res.status(500).json({ error: e.message });
   }
 });
