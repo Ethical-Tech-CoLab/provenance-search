@@ -450,6 +450,19 @@ function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesCons
   return score / 100;
 }
 
+// A watchlist-domain hit only means the *domain* is on the watchlist — Tavily's search can
+// still surface a page from that domain that doesn't actually discuss this specific artwork
+// (e.g. a general index page, or an unrelated case study). Require the hit's own title or
+// snippet to mention the artwork's title or artist before treating it as a real match; domain
+// hits that fail this check are downgraded to a low-severity "needs manual verification" flag
+// instead of being silently dropped or over-reported as a high-severity match.
+function hitMentionsArtwork(hit, title, artist) {
+  const haystack = `${hit.title || ''} ${hit.snippet || ''}`.toLowerCase();
+  const titleMatch = Boolean(title) && haystack.includes(title.toLowerCase());
+  const artistMatch = Boolean(artist) && haystack.includes(artist.toLowerCase());
+  return titleMatch || artistMatch;
+}
+
 // ── PRE-1970 CUSTODY GAP FLAG (non-Western-origin works) ──
 // Methodological context: the 1970 UNESCO Convention on the Means of Prohibiting and
 // Preventing the Illicit Import, Export and Transfer of Ownership of Cultural Property is the
@@ -667,7 +680,16 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
     const seenUrls = new Set(riskFlags.map(f => f.sourceUrl).filter(Boolean));
     for (const h of tavily.hits) {
       if (WATCHLIST_DOMAINS.some(d => h.domain?.includes(d)) && !seenUrls.has(h.url)) {
-        riskFlags.push({ type: 'watchlist_match', severity: 'high', detail: `Match found on ${h.domain}: "${h.title}"`, sourceUrl: h.url });
+        if (hitMentionsArtwork(h, title, artist)) {
+          riskFlags.push({ type: 'watchlist_match', severity: 'high', detail: `Match found on ${h.domain}: "${h.title}"`, sourceUrl: h.url });
+        } else {
+          riskFlags.push({
+            type: 'watchlist_domain_unconfirmed',
+            severity: 'low',
+            detail: `Watchlist domain found but content may not relate to this specific artwork — manual verification recommended. (${h.domain}: "${h.title}")`,
+            sourceUrl: h.url
+          });
+        }
         seenUrls.add(h.url);
       }
     }
