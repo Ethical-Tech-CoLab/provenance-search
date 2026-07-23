@@ -710,10 +710,15 @@ Return ONLY raw JSON (no markdown, no backticks) with this exact shape:
 
 confidence is a number from 0 to 1 reflecting how sure you are of the identification. If you cannot identify anything meaningful, set the fields to null and explain briefly in "notes".`;
 
+    // 500 was too low: gemini-flash-latest spends "thinking" tokens out of the same
+    // maxOutputTokens budget before writing any visible output (confirmed via
+    // usageMetadata.thoughtsTokenCount — a bare/ambiguous image can burn 400+ tokens on
+    // reasoning alone), so the JSON response got cut off mid-object (finishReason:
+    // MAX_TOKENS) and extractJson() correctly failed to parse the truncated text.
     const text = await callGemini([
       { text: prompt },
       { inline_data: { mime_type: imageMimeType, data: base64 } }
-    ], 500);
+    ], 3000);
     console.log('Gemini raw response:', text.substring(0, 300));
 
     const parsed = extractJson(text);

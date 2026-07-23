@@ -1065,7 +1065,8 @@ async function onFileChosen(file){
       statusEl.textContent='Could not fully identify the artwork'+(data.notes?': '+data.notes:'')+'. Please complete the fields below.';
     }
   }catch(err){
-    statusEl.textContent='Identification failed: '+err.message+'. You can still fill in the fields manually.';
+    console.error('Image identification failed:', err.message);
+    statusEl.textContent='📷 Camera identification temporarily unavailable — please fill in the details manually.';
   }
 }
 
