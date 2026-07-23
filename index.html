@@ -431,6 +431,18 @@ input:focus{border-color:var(--gold)}
 }
 .fm-share:hover{border-color:var(--gold);color:var(--gold)}
 
+/* Field Mode: dynamic "why" line + rationale + sources summary, so an amber/red result
+   explains itself instead of just showing a bare score. */
+.fm-context{padding:1rem 1.1rem;border-bottom:1px solid var(--rule)}
+.fm-reasons{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.6rem}
+.fm-reason-item{
+  font-family:var(--mono);font-size:.68rem;color:var(--muted);line-height:1.5;
+  padding-left:.9rem;position:relative;
+}
+.fm-reason-item::before{content:'—';position:absolute;left:0;color:var(--gold)}
+.fm-rationale{font-size:.78rem;color:var(--muted);font-style:italic;line-height:1.6}
+.fm-sources-line{margin-top:.7rem;font-family:var(--mono);font-size:.66rem;color:var(--muted);letter-spacing:.02em}
+
 /* Public-search-vs-restricted-database disclaimer — always present on a result, not just
    when flags exist. Soft amber: discreet but visible, distinct from the risk-flag colours.
    The .info variant (clean result: high score, no high-severity flags) uses a neutral tone
@@ -1222,9 +1234,37 @@ function fieldStatus(d){
   return{cls,emoji,action,statusLine:parts.join(' · ')};
 }
 
+// Explains an amber/red (or even a clean) result from the actual data — flags, gaps, and
+// source count — instead of leaving the visitor to guess why the score is what it is.
+function explainReasons(d){
+  const flags=d.riskFlags||[];
+  const custodyGaps=(d.provenanceTimeline||[]).filter(e=>e.isGap).length;
+  const sourcesFound=(d.authoritiesConsulted||[]).filter(a=>a.response&&a.response!=='not_found').length;
+  const reasons=[];
+  if(custodyGaps>0)reasons.push(`${custodyGaps} custody gap${custodyGaps>1?'s':''} detected in the ownership timeline`);
+  if(flags.some(f=>f.type==='general_knowledge_used'))reasons.push('General knowledge used — part of timeline not from live sources');
+  if(sourcesFound<3)reasons.push('Fewer than 3 sources returned results');
+  if(flags.some(f=>f.type==='pre1970_gap_non_western_origin'))reasons.push('Pre-1970 provenance gap — UNESCO Convention may apply');
+  return reasons;
+}
+
+const SOURCE_SHORT_NAMES={
+  'Tavily — provenance & looting research':'Tavily','The Met Museum':'Met',
+  'Art Institute of Chicago':'AIC','MoMA (bundled open dataset)':'MoMA',
+  'Europeana':'Europeana','Victoria and Albert Museum':'V&A','Wikidata':'Wikidata'
+};
+function sourcesLine(d){
+  return (d.authoritiesConsulted||[]).map(a=>{
+    const label=SOURCE_SHORT_NAMES[a.name]||a.name;
+    const mark=(a.response==='clear'||a.response==='flagged')?'✓':'—';
+    return `${esc(label)} ${mark}`;
+  }).join(' · ');
+}
+
 function renderFieldReport(d){
   const sc=d.confidenceScore||0;
   const fs=fieldStatus(d);
+  const reasons=explainReasons(d);
 
   let tl='';
   for(const e of(d.provenanceTimeline||[])){
@@ -1251,6 +1291,11 @@ function renderFieldReport(d){
     <div class="fm-statusline">${esc(fs.statusLine)}</div>
     <div class="fm-actions">
       <button type="button" class="fm-action-btn ${fs.cls}">${fs.emoji} ${fs.action}</button>
+    </div>
+    <div class="fm-context">
+      ${reasons.length?`<div class="fm-reasons">${reasons.map(r=>`<div class="fm-reason-item">${esc(r)}</div>`).join('')}</div>`:''}
+      ${d.confidenceRationale?`<div class="fm-rationale">${esc(d.confidenceRationale)}</div>`:''}
+      <div class="fm-sources-line">Sources: ${sourcesLine(d)}</div>
     </div>
     <div class="passport-body">
       <details class="tl-details">
