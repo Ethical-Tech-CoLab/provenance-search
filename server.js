@@ -565,6 +565,21 @@ function hitMentionsArtwork(hit, title, artist) {
   return titleMatch || artistMatch;
 }
 
+// PDFs on a watchlist domain are frequently generic documents (grant announcements,
+// newsletters, annual reviews) that happen to be hosted there without discussing this
+// specific artwork — a title-OR-artist match is too loose for that format. Require BOTH
+// to appear before treating a PDF hit as confirmed; HTML pages keep the looser check above
+// since they're more often a focused case page about one work.
+function isPdfUrl(url) {
+  return /\.pdf(?:[?#].*)?$/i.test(String(url || ''));
+}
+function hitMentionsArtworkStrict(hit, title, artist) {
+  const haystack = `${hit.title || ''} ${hit.snippet || ''}`.toLowerCase();
+  const titleMatch = Boolean(title) && haystack.includes(title.toLowerCase());
+  const artistMatch = Boolean(artist) && haystack.includes(artist.toLowerCase());
+  return titleMatch && artistMatch;
+}
+
 // ── PRE-1970 CUSTODY GAP FLAG (non-Western-origin works) ──
 // Methodological context: the 1970 UNESCO Convention on the Means of Prohibiting and
 // Preventing the Illicit Import, Export and Transfer of Ownership of Cultural Property is the
@@ -807,13 +822,16 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
     const seenUrls = new Set(riskFlags.map(f => f.sourceUrl).filter(Boolean));
     for (const h of tavily.hits) {
       if (isWatchlistHit(h) && !seenUrls.has(h.url)) {
-        if (hitMentionsArtwork(h, title, artist)) {
+        const isPdf = isPdfUrl(h.url);
+        const mentionsArtwork = isPdf ? hitMentionsArtworkStrict(h, title, artist) : hitMentionsArtwork(h, title, artist);
+        if (mentionsArtwork) {
           riskFlags.push({ type: 'watchlist_match', severity: 'high', detail: `Match found on ${h.domain}: "${h.title}"`, sourceUrl: h.url });
         } else {
+          const pdfNote = isPdf ? ' PDF document — content may not specifically reference this artwork.' : '';
           riskFlags.push({
             type: 'watchlist_domain_unconfirmed',
             severity: 'low',
-            detail: `Watchlist domain found but content may not relate to this specific artwork — manual verification recommended. (${h.domain}: "${h.title}")`,
+            detail: `Watchlist domain found but content may not relate to this specific artwork — manual verification recommended.${pdfNote} (${h.domain}: "${h.title}") — verify at ${h.url}`,
             sourceUrl: h.url
           });
         }
