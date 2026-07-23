@@ -653,7 +653,7 @@ footer{
     </div>
   </div>
   <div class="hero-stats fade-up" style="transition-delay:.4s">
-    <div class="stat"><div class="stat-num">6</div><div class="stat-label">Sources checked</div></div>
+    <div class="stat"><div class="stat-num">7</div><div class="stat-label">Sources checked</div></div>
     <div class="stat"><div class="stat-num">0</div><div class="stat-label">Sign-up required</div></div>
     <div class="stat"><div class="stat-num">3</div><div class="stat-label">Ways to search</div></div>
   </div>
@@ -672,7 +672,7 @@ footer{
     <div class="step fade-up" style="transition-delay:.08s">
       <div class="step-num">02</div>
       <div class="step-title">Research</div>
-      <p class="step-desc">Tavily searches authoritative domains — Interpol, UNESCO, the Art Loss Register, Lost Art, the FBI, IFAR, and major auction houses — for provenance and looting alerts.</p>
+      <p class="step-desc">Tavily searches authoritative domains — Interpol, UNESCO, the Art Loss Register, Lost Art, the FBI, and major auction houses — for provenance and looting alerts.</p>
       <span class="step-tag">Tavily</span>
     </div>
     <div class="step fade-up" style="transition-delay:.16s">
@@ -767,7 +767,7 @@ footer{
     <!-- LOADING -->
     <div class="loading-box" id="loadingBox">
       <div class="spinner"></div>
-      <div class="loading-title" id="loadingTitle">Searching 6 sources…</div>
+      <div class="loading-title" id="loadingTitle">Searching 7 sources…</div>
       <div class="loading-list" id="loadingList"></div>
       <div class="loading-stall" id="loadingStall" style="display:none">Still searching…</div>
     </div>
@@ -912,7 +912,7 @@ function forceRefreshVerify(){
 }
 
 // ── LOADING PROGRESS (per-source list, streamed live over SSE from /api/verify) ──
-const SOURCE_ORDER=['Tavily','The Met Museum','Art Institute of Chicago','MoMA','Europeana','Wikidata'];
+const SOURCE_ORDER=['Tavily','The Met Museum','Art Institute of Chicago','MoMA','Europeana','Victoria and Albert Museum','Wikidata'];
 function initLoadingList(){
   document.getElementById('loadingList').innerHTML=SOURCE_ORDER
     .map(name=>`<div class="loading-item" data-name="${name}"><span class="li-icon">⏳</span> Searching ${name}…</div>`)
@@ -923,7 +923,7 @@ function markSourceDone(name){
   if(el){el.classList.add('done');el.innerHTML=`<span class="li-icon">✓</span> ${name}`;}
 }
 function showLoading(){
-  document.getElementById('loadingTitle').textContent='Searching 6 sources…';
+  document.getElementById('loadingTitle').textContent='Searching 7 sources…';
   document.getElementById('loadingStall').style.display='none';
   initLoadingList();
   document.getElementById('loadingBox').style.display='block';
