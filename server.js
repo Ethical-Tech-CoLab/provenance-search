@@ -17,9 +17,46 @@ const sharp = require('sharp');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
+// Trust the first proxy hop (Railway) so req.ip reflects the real client IP from
+// X-Forwarded-For instead of the proxy's own address — required for per-IP rate limiting
+// to actually be per-visitor rather than global.
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static('.'));
+
+// ── RATE LIMITING (in-memory, per-IP) ──
+// Fixed-window limiter: max 10 requests per IP per 60s, applied to the two endpoints that
+// call paid/quota-limited external APIs (Gemini, Tavily, Europeana). In-memory only — fine
+// for a single-instance deployment; resets naturally as old timestamps age out.
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const rateLimitMap = new Map(); // ip -> array of request timestamps (ms)
+
+function rateLimiter(req, res, next) {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const timestamps = (rateLimitMap.get(ip) || []).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    const retryAfterSec = Math.ceil((RATE_LIMIT_WINDOW_MS - (now - timestamps[0])) / 1000);
+    res.set('Retry-After', String(retryAfterSec));
+    return res.status(429).json({ error: `Too many requests. Please wait ${retryAfterSec}s and try again.` });
+  }
+  timestamps.push(now);
+  rateLimitMap.set(ip, timestamps);
+  next();
+}
+
+// Periodic cleanup so the Map doesn't grow unbounded from one-off visitor IPs.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, timestamps] of rateLimitMap.entries()) {
+    const fresh = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (fresh.length) rateLimitMap.set(ip, fresh);
+    else rateLimitMap.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS).unref();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const EUROPEANA_API_KEY = process.env.EUROPEANA_API_KEY;
@@ -63,7 +100,12 @@ function extractJson(text) {
   }
 }
 
-async function callGemini(parts, maxOutputTokens, isRetry = false) {
+// Retry schedule: up to 3 retries (4 attempts total) with exponential backoff 1s/2s/4s,
+// for rate-limit (429) and overload (503 / "high demand") responses. Each attempt gets its
+// own 30s timeout via a fresh AbortController.
+const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+async function callGemini(parts, maxOutputTokens, attempt = 0) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
 
@@ -85,15 +127,24 @@ async function callGemini(parts, maxOutputTokens, isRetry = false) {
     clearTimeout(timeoutId);
   }
 
-  const data = await r.json();
-  const isOverloaded = r.status === 503 || /high demand|overloaded/i.test(data.error?.message || '');
+  let data;
+  try {
+    data = await r.json();
+  } catch {
+    throw new Error(`Gemini returned a non-JSON response (HTTP ${r.status}).`);
+  }
 
-  if (isOverloaded) {
-    if (!isRetry) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      return callGemini(parts, maxOutputTokens, true);
+  const isRateLimited = r.status === 429;
+  const isOverloaded  = r.status === 503 || /high demand|overloaded/i.test(data.error?.message || '');
+
+  if (isRateLimited || isOverloaded) {
+    if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+      await new Promise(resolve => setTimeout(resolve, GEMINI_RETRY_DELAYS_MS[attempt]));
+      return callGemini(parts, maxOutputTokens, attempt + 1);
     }
-    throw new Error('Gemini is temporarily busy. Please try again in a moment.');
+    throw new Error(isRateLimited
+      ? 'Gemini rate limit reached after 3 retries. Please try again in a moment.'
+      : 'Gemini is temporarily busy after 3 retries. Please try again in a moment.');
   }
 
   if (data.error) throw new Error(data.error.message || 'Gemini API error');
@@ -102,16 +153,16 @@ async function callGemini(parts, maxOutputTokens, isRetry = false) {
 
 // ── FREE PROVENANCE SOURCES ──
 
-async function searchMet(query) {
+async function searchMet(query, signal) {
   const name = 'The Met Museum';
   const domain = 'metmuseum.org';
   try {
-    const sr = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/search?q=${encodeURIComponent(query)}`);
+    const sr = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/search?q=${encodeURIComponent(query)}`, { signal });
     const sd = await sr.json();
     const ids = (sd.objectIDs || []).slice(0, 3);
     if (!ids.length) return { name, domain, response: 'not_found', hits: [] };
     const details = await Promise.all(
-      ids.map(id => fetch(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`).then(r => r.json()).catch(() => null))
+      ids.map(id => fetch(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`, { signal }).then(r => r.json()).catch(() => null))
     );
     const hits = details.filter(Boolean).map(o => ({
       title: o.title, artist: o.artistDisplayName, date: o.objectDate,
@@ -123,12 +174,12 @@ async function searchMet(query) {
   }
 }
 
-async function searchAIC(query) {
+async function searchAIC(query, signal) {
   const name = 'Art Institute of Chicago';
   const domain = 'artic.edu';
   try {
     const fields = 'id,title,artist_display,date_display,medium_display,provenance_text';
-    const sr = await fetch(`https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(query)}&fields=${fields}&limit=3`);
+    const sr = await fetch(`https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(query)}&fields=${fields}&limit=3`, { signal });
     const sd = await sr.json();
     const hits = (sd.data || []).map(o => ({
       title: o.title, artist: o.artist_display, date: o.date_display,
@@ -141,12 +192,12 @@ async function searchAIC(query) {
   }
 }
 
-async function searchEuropeana(query) {
+async function searchEuropeana(query, signal) {
   const name = 'Europeana';
   const domain = 'europeana.eu';
   if (!EUROPEANA_API_KEY) return { name, domain, response: 'not_found', hits: [], skipped: true };
   try {
-    const sr = await fetch(`https://api.europeana.eu/record/v2/search.json?query=${encodeURIComponent(query)}&wskey=${EUROPEANA_API_KEY}&rows=3`);
+    const sr = await fetch(`https://api.europeana.eu/record/v2/search.json?query=${encodeURIComponent(query)}&wskey=${EUROPEANA_API_KEY}&rows=3`, { signal });
     const sd = await sr.json();
     const hits = (sd.items || []).map(o => ({
       title: Array.isArray(o.title) ? o.title[0] : o.title,
@@ -159,12 +210,13 @@ async function searchEuropeana(query) {
   }
 }
 
-async function searchWikipedia(query) {
+async function searchWikipedia(query, signal) {
   const name = 'Wikipedia';
   const domain = 'wikipedia.org';
   try {
     const sr = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`, {
-      headers: { 'User-Agent': WIKIMEDIA_UA }
+      headers: { 'User-Agent': WIKIMEDIA_UA },
+      signal
     });
     const sd = await sr.json();
     const hits = (sd.query?.search || []).slice(0, 3).map(o => ({
@@ -200,12 +252,13 @@ function searchMoma(title, artist) {
   }
 }
 
-async function searchWikidata(title, artist) {
+async function searchWikidata(title, artist, signal) {
   const name = 'Wikidata';
   const domain = 'wikidata.org';
   try {
     const sr = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(title)}&language=en&type=item&limit=5&format=json`, {
-      headers: { 'User-Agent': WIKIMEDIA_UA }
+      headers: { 'User-Agent': WIKIMEDIA_UA },
+      signal
     });
     const sd = await sr.json();
     const candidates = sd.search || [];
@@ -241,7 +294,8 @@ async function searchWikidata(title, artist) {
       }`;
 
     const qr = await fetch(`https://query.wikidata.org/sparql?query=${encodeURIComponent(sparql)}&format=json`, {
-      headers: { 'User-Agent': WIKIMEDIA_UA, 'Accept': 'application/sparql-results+json' }
+      headers: { 'User-Agent': WIKIMEDIA_UA, 'Accept': 'application/sparql-results+json' },
+      signal
     });
     const qd = await qr.json();
     const bindings = qd.results?.bindings || [];
@@ -266,7 +320,7 @@ async function searchWikidata(title, artist) {
   }
 }
 
-async function searchTavily(title, artist) {
+async function searchTavily(title, artist, signal) {
   const name = 'Tavily — provenance & looting research';
   const domain = TAVILY_DOMAINS.join(', ');
   if (!TAVILY_API_KEY) return { name, domain, response: 'not_found', hits: [], skipped: true };
@@ -281,7 +335,8 @@ async function searchTavily(title, artist) {
         search_depth: 'advanced',
         include_domains: TAVILY_DOMAINS,
         max_results: 10
-      })
+      }),
+      signal
     });
     const sd = await sr.json();
     if (sd.error) throw new Error(sd.error);
@@ -374,9 +429,22 @@ Set "isGeneralKnowledge": false on every entry that came from the sources above.
   return parsed;
 }
 
+// ── INPUT SANITIZATION ──
+// Strips control characters (which could otherwise disrupt the Gemini prompt or leak into
+// downstream API query strings) and caps length before any user-supplied text reaches a
+// prompt or an external API call.
+
+function sanitizeText(value, maxLength) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim()
+    .slice(0, maxLength);
+}
+
 // ── ROUTES ──
 
-app.post('/api/identify', upload.single('image'), async (req, res) => {
+app.post('/api/identify', rateLimiter, upload.single('image'), async (req, res) => {
   console.log('Identify request received, image size:', req.file?.size || 0);
   if (!req.file) return res.status(400).json({ error: 'No image provided.' });
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
@@ -410,23 +478,38 @@ confidence is a number from 0 to 1 reflecting how sure you are of the identifica
   }
 });
 
-app.post('/api/verify', async (req, res) => {
-  const { title, artist, period, medium, price } = req.body || {};
+app.post('/api/verify', rateLimiter, async (req, res) => {
+  const body = req.body || {};
+  const title  = sanitizeText(body.title, 200);
+  const artist = sanitizeText(body.artist, 100);
+  const period = sanitizeText(body.period, 100);
+  const medium = sanitizeText(body.medium, 100);
+  const price  = sanitizeText(body.price, 50);
   if (!title || !artist) return res.status(400).json({ error: 'Title and artist are required.' });
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
 
   const query = [title, artist].filter(Boolean).join(' ');
 
+  // Global 30s bound on the parallel search phase: if it runs long, abort every in-flight
+  // fetch at once via the shared signal rather than letting the request hang indefinitely.
+  // Individual source failures do NOT cancel their siblings — every searchX() already
+  // degrades gracefully to a fallback result on its own error, so a flaky single source
+  // (e.g. Wikipedia timing out) must not blank out the other 6 independent sources.
+  const searchController = new AbortController();
+  const searchTimeoutId = setTimeout(() => searchController.abort(), 30000);
+  const signal = searchController.signal;
+
   try {
     const [tavily, met, aic, europeana, wiki, moma, wikidata] = await Promise.all([
-      searchTavily(title, artist),
-      searchMet(query),
-      searchAIC(query),
-      searchEuropeana(query),
-      searchWikipedia(query),
+      searchTavily(title, artist, signal),
+      searchMet(query, signal),
+      searchAIC(query, signal),
+      searchEuropeana(query, signal),
+      searchWikipedia(query, signal),
       Promise.resolve(searchMoma(title, artist)),
-      searchWikidata(title, artist)
+      searchWikidata(title, artist, signal)
     ]);
+    clearTimeout(searchTimeoutId);
 
     const authoritiesConsulted = [tavily, met, aic, moma, europeana, wiki, wikidata].map(r => ({
       name: r.name,
@@ -481,6 +564,7 @@ app.post('/api/verify', async (req, res) => {
 
     res.json(passport);
   } catch (e) {
+    clearTimeout(searchTimeoutId);
     res.status(500).json({ error: e.message });
   }
 });
