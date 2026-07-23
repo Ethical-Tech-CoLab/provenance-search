@@ -260,6 +260,23 @@ nav.scrolled{
 }
 .choice-btn.tertiary:hover{color:var(--ink)}
 
+/* "Try an example" links — secondary to the three main choice buttons, helps new visitors
+   understand what the tool does before they commit to their own search. */
+.example-links{
+  margin-top:.5rem;padding-top:1rem;border-top:1px solid var(--rule);
+  display:flex;flex-direction:column;gap:.4rem;align-items:flex-start;
+}
+.example-label{
+  font-family:var(--mono);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:.15rem;
+}
+.example-btn{
+  font-family:var(--mono);font-size:.72rem;
+  background:none;border:none;color:var(--gold);cursor:pointer;
+  padding:.2rem 0;text-align:left;text-decoration:underline;text-underline-offset:3px;
+}
+.example-btn:hover{color:var(--ink)}
+
 /* VIEW 2 — details: photo preview (if any) + minimal fields + big search CTA */
 .details-view{display:none;flex-direction:column;gap:1rem}
 .details-view.active{display:flex}
@@ -413,6 +430,17 @@ input:focus{border-color:var(--gold)}
   padding:.75rem;border-radius:2px;cursor:pointer;
 }
 .fm-share:hover{border-color:var(--gold);color:var(--gold)}
+
+/* Public-search-vs-restricted-database disclaimer — always present on a result, not just
+   when flags exist. Soft amber: discreet but visible, distinct from the risk-flag colours. */
+.source-disclaimer{
+  padding:.8rem 1.1rem;
+  background:#6b411812;
+  border-bottom:1px solid var(--rule);
+  border-left:3px solid var(--amber);
+  font-size:.76rem;line-height:1.55;
+  color:var(--amber);
+}
 
 .result-rationale{
   padding:1rem 1.1rem;font-size:.8rem;color:var(--muted);
@@ -716,6 +744,13 @@ footer{
         </button>
         <input type="file" id="captureInput" accept="image/*" capture="environment" style="display:none" onchange="onFileChosen(this.files[0])"/>
         <input type="file" id="uploadInput" accept="image/*" style="display:none" onchange="onFileChosen(this.files[0])"/>
+
+        <div class="example-links">
+          <span class="example-label">Try an example</span>
+          <button type="button" class="example-btn" onclick="fillExample('wally')">🖼️ Portrait of Wally (Schiele)</button>
+          <button type="button" class="example-btn" onclick="fillExample('dali')">⏰ The Persistence of Memory (Dalí)</button>
+          <button type="button" class="example-btn" onclick="fillExample('nefertiti')">👑 Nefertiti Bust</button>
+        </div>
       </div>
 
       <!-- VIEW 2: details (photo preview if any, + minimal fields, + search) -->
@@ -871,6 +906,23 @@ function updateSearchBtnState(){
   const title=document.getElementById('d-title').value.trim();
   const artist=document.getElementById('d-artist').value.trim();
   document.getElementById('searchBtn').disabled=!(title&&artist);
+}
+
+// ── EXAMPLE ARTWORKS — fills the form so new visitors can see what the tool does without
+// having to think of a work themselves; still requires an explicit tap on Search Provenance,
+// same as every other entry path (identify-from-photo doesn't auto-search either).
+const EXAMPLES={
+  wally:{title:'Portrait of Wally',artist:'Egon Schiele'},
+  dali:{title:'The Persistence of Memory',artist:'Salvador Dalí'},
+  nefertiti:{title:'Nefertiti Bust',artist:'Thutmose'}
+};
+function fillExample(key){
+  const ex=EXAMPLES[key];
+  if(!ex)return;
+  showManualForm();
+  document.getElementById('d-title').value=ex.title;
+  document.getElementById('d-artist').value=ex.artist;
+  updateSearchBtnState();
 }
 
 function triggerCapture(){ document.getElementById('captureInput').click(); }
@@ -1151,6 +1203,7 @@ function renderFieldReport(d){
       <div class="result-score-lbl">Provenance confidence</div>
       <div class="result-artwork">${d.artwork?.title||'Unknown'} — ${d.artwork?.artist||''}</div>
     </div>
+    <div class="source-disclaimer">⚠️ This tool searches the public websites of INTERPOL, FBI, and Art Loss Register — not their restricted databases. A negative result is not a clearance. Professional due diligence requires direct database access.</div>
     <div class="fm-statusline">${fs.statusLine}</div>
     <div class="fm-actions">
       <button type="button" class="fm-action-btn ${fs.cls}">${fs.emoji} ${fs.action}</button>
@@ -1259,6 +1312,7 @@ function renderFullReport(d){
       <div class="result-status">${status.text}</div>
       <div class="result-artwork">${d.artwork?.title||'Unknown'} — ${d.artwork?.artist||''}</div>
     </div>
+    <div class="source-disclaimer">⚠️ This tool searches the public websites of INTERPOL, FBI, and Art Loss Register — not their restricted databases. A negative result is not a clearance. Professional due diligence requires direct database access.</div>
     ${d.confidenceRationale?`<div class="result-rationale">${d.confidenceRationale}</div>`:''}
     <div class="passport-body">
       <details class="tl-details" ${tlCount<=2?'open':''}>

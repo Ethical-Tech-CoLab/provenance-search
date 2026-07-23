@@ -432,7 +432,50 @@ async function searchTavily(title, artist, signal) {
 }
 
 // ── SCORING (algorithmic, not AI) ──
-
+//
+// VALIDATION AGAINST KNOWN CASES — checked by constructing realistic inputs from each work's
+// well-documented public record and running them through this exact function (not hand
+// arithmetic). Wally and Dalí are reconstructed from well-established public-record facts —
+// Gemini's free-tier quota (20 req/min) was exhausted from earlier testing this session, so a
+// full live pipeline run wasn't available for those two at the time of this check. Nefertiti's
+// number is a REAL live result captured earlier in this session (not reconstructed).
+//
+// Case 1 — Egon Schiele, "Portrait of Wally": forced 1938 transfer from Lea Bondi Jaray to
+// Nazi dealer Friedrich Welz; genuinely murky Austrian-state custody 1945-1954 (the actual
+// gap); Leopold 1954; seized by the NY DA in 1997 and litigated for over a decade; 2010
+// settlement ($19M to the Bondi estate). Reconstructed input: 1 real gap (the 1945-1954
+// patch — the rest of the history is unusually WELL documented, that's precisely why it could
+// be litigated), 3 high flags (Nazi spoliation, watchlist_match, wikidata_repatriation_signal),
+// verifiedCount=2 (a Leopold Museum piece, not held by Met/AIC/MoMA/Europeana/V&A).
+//   Old weights (30/25/10/10): 15% — directionally low, but the textbook "known looted,
+//   litigated, settled" case should not still read as "some real risk of being fine".
+//   New weights (30/25/20/10): 0% — matches expectation.
+//
+// Case 2 — Salvador Dalí, "The Persistence of Memory": created 1931, MoMA acquired 1934
+// (anonymous gift), continuously in MoMA's own collection since — one of the most
+// exhaustively documented paintings in existence, zero theft/looting history. Reconstructed
+// input: 0 gaps, 0 risk flags, verifiedCount=3 (Tavily, MoMA, Wikidata clear).
+//   Both old and new weights: 100%. Deliberately NOT capped down to fit the illustrative
+//   "70-85%" expectation: a fixed, published, deterministic rule set (this project's explicit
+//   design principle — see passport attestation: "attests to process, not to underlying
+//   truth") should return 100% when it finds zero gaps, zero flags, and sufficient
+//   corroboration. Adding an arbitrary ceiling just to land under a human-estimated range
+//   would itself be an unprincipled fudge — the number means "no automated red flags," not
+//   "certified beyond doubt," and the UI's own framing already carries that caveat.
+//
+// Case 3 — Nefertiti Bust (Ägyptisches Museum Berlin): excavated 1912, taken to Berlin,
+// contested pre-1970 colonial-era gap. REAL result captured earlier this session: 1 gap,
+// 2 high flags (contested-export flag from Gemini, watchlist_match), verifiedCount>=3.
+//   Old weights: 50% (top edge of the 30-50% expected band).
+//   New weights: 30% (bottom edge) — an improvement: "contested repatriation, low-medium" per
+//   the case's own status label reads more accurately at 30% than sitting right at the
+//   boundary of "medium".
+//
+// Conclusion: highFlag weight raised from 10 to 20. This is safe now specifically because of
+// the same-day watchlist-precision fix (hitMentionsArtwork) — before that fix, a "high" flag
+// could fire on a same-domain-but-unrelated Tavily hit, so doubling its weight would have
+// doubled the cost of a false positive too. Now that "high" is reserved for hits that actually
+// mention the artwork, each one carries more real signal and can reasonably cost more.
 function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesConsulted, valuationAssessment }) {
   let score = 100;
   const gapCount = (provenanceTimeline || []).filter(e => e.isGap).length;
@@ -442,7 +485,7 @@ function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesCons
   if (verifiedCount < 3) score -= 25;
 
   const highFlagCount = (riskFlags || []).filter(f => f.severity === 'high').length;
-  score -= highFlagCount * 10;
+  score -= highFlagCount * 20;
 
   if (valuationAssessment?.anomalous) score -= 10;
 
