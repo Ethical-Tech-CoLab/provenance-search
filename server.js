@@ -63,12 +63,24 @@ const EUROPEANA_API_KEY = process.env.EUROPEANA_API_KEY;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 
 const GEMINI_MODEL = 'gemini-flash-latest';
+// unesco.org is matched by hostname, not path, so it already covers UNESCO's illicit-
+// trafficking/repatriation pages (e.g. unesco.org/en/fight-illicit-trafficking) — no separate
+// entry needed for that.
 const TAVILY_DOMAINS = [
   'metmuseum.org', 'getty.edu', 'interpol.int', 'unesco.org', 'artloss.com',
   'lostart.de', 'lootedart.com', 'christies.com', 'sothebys.com', 'artnet.com',
-  'fbi.gov', 'ifar.org', 'wikipedia.org'
+  'fbi.gov', 'ifar.org',
+  // Government cultural-property/repatriation authorities — colonial-era and antiquities
+  // claims, not just Nazi-era looting.
+  'thegazette.co.uk', 'culture.gov.gr', 'antiquities.gov.eg'
 ];
-const WATCHLIST_DOMAINS = ['interpol.int', 'artloss.com', 'lostart.de', 'lootedart.com', 'fbi.gov'];
+// A hit on any of these domains is a government or international-body cultural-property
+// claim (UK Gazette notices, Greek Ministry of Culture, Egyptian antiquities authority) —
+// treated as seriously as an INTERPOL match.
+const WATCHLIST_DOMAINS = [
+  'interpol.int', 'artloss.com', 'lostart.de', 'lootedart.com', 'fbi.gov',
+  'thegazette.co.uk', 'culture.gov.gr', 'antiquities.gov.eg'
+];
 const WIKIMEDIA_UA = 'arts-and-artifacts-provenance-agent/1.0 (https://github.com/; contact via repo)';
 
 // ── MOMA LOCAL DATASET (bundled, gzip-compressed) ──
@@ -210,26 +222,6 @@ async function searchEuropeana(query, signal) {
   }
 }
 
-async function searchWikipedia(query, signal) {
-  const name = 'Wikipedia';
-  const domain = 'wikipedia.org';
-  try {
-    const sr = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`, {
-      headers: { 'User-Agent': WIKIMEDIA_UA },
-      signal
-    });
-    const sd = await sr.json();
-    const hits = (sd.query?.search || []).slice(0, 3).map(o => ({
-      title: o.title,
-      snippet: (o.snippet || '').replace(/<[^>]+>/g, ''),
-      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(o.title.replace(/ /g, '_'))}`
-    }));
-    return { name, domain, response: hits.length ? 'clear' : 'not_found', hits };
-  } catch (e) {
-    return { name, domain, response: 'not_found', hits: [], error: e.message };
-  }
-}
-
 function searchMoma(title, artist) {
   const name = 'MoMA (bundled open dataset)';
   const domain = 'moma.org';
@@ -269,8 +261,21 @@ async function searchWikidata(title, artist, signal) {
     const qid = best.id;
     const entityUrl = `https://www.wikidata.org/wiki/${qid}`;
 
+    // Repatriation/looting signal properties (added on top of the original dates/collection
+    // query): P7084 (related category — catches categories like "cultural property
+    // repatriation"), P1343 (described by source — academic references, surfaced as
+    // supporting citations only, see findWikidataRepatriationSignal below), and a check for
+    // whether the item is classified under looting.
+    //
+    // Correction: the original spec for this check named wd:Q41207, but that QID resolves to
+    // "coin" on live Wikidata, not "looted art" — using it as given would have silently
+    // matched the wrong concept. Q192623 ("looting") is the closest real match. In practice
+    // Wikidata rarely types an artwork instance-of/subclass-of "looting" directly — looting is
+    // normally recorded as a *significant event* via P793 (already queried below as
+    // ?eventLabel), which remains the primary signal; this P31/P279* check is a best-effort
+    // backstop, not the main detection path.
     const sparql = `
-      SELECT ?inception ?locationLabel ?collectionLabel ?collStart ?collEnd ?ownerLabel ?ownStart ?ownEnd ?eventLabel ?eventTime WHERE {
+      SELECT ?inception ?locationLabel ?collectionLabel ?collStart ?collEnd ?ownerLabel ?ownStart ?ownEnd ?eventLabel ?eventTime ?relatedCategoryLabel ?sourceStmtLabel ?isLootedArt WHERE {
         OPTIONAL { wd:${qid} wdt:P571 ?inception. }
         OPTIONAL { wd:${qid} wdt:P276 ?location. }
         OPTIONAL {
@@ -290,6 +295,9 @@ async function searchWikidata(title, artist, signal) {
           ?evStmt ps:P793 ?event.
           OPTIONAL { ?evStmt pq:P585 ?eventTime. }
         }
+        OPTIONAL { wd:${qid} wdt:P7084 ?relatedCategory. }
+        OPTIONAL { wd:${qid} wdt:P1343 ?sourceStmt. }
+        BIND(EXISTS { wd:${qid} wdt:P31/wdt:P279* wd:Q192623 } AS ?isLootedArt)
         SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
       }`;
 
@@ -312,12 +320,34 @@ async function searchWikidata(title, artist, signal) {
       if (b.collectionLabel) pushHit({ type: 'collection', label: b.collectionLabel.value, start: b.collStart?.value || null, end: b.collEnd?.value || null, url: entityUrl });
       if (b.ownerLabel) pushHit({ type: 'owned_by', label: b.ownerLabel.value, start: b.ownStart?.value || null, end: b.ownEnd?.value || null, url: entityUrl });
       if (b.eventLabel) pushHit({ type: 'significant_event', label: b.eventLabel.value, time: b.eventTime?.value || null, url: entityUrl });
+      if (b.relatedCategoryLabel) pushHit({ type: 'related_category', label: b.relatedCategoryLabel.value, url: entityUrl });
+      if (b.sourceStmtLabel) pushHit({ type: 'described_by_source', label: b.sourceStmtLabel.value, url: entityUrl });
+      if (b.isLootedArt && b.isLootedArt.value === 'true') pushHit({ type: 'looting_classification', label: 'Classified in Wikidata as a form of looting (P31/P279* → Q192623 "looting")', url: entityUrl });
     }
 
     return { name, domain, response: hits.length ? 'clear' : 'not_found', hits, entityUrl };
   } catch (e) {
     return { name, domain, response: 'not_found', hits: [], error: e.message };
   }
+}
+
+// ── REPATRIATION SIGNAL DETECTION (Wikidata) ──
+// Looks for any of the three genuine looting/repatriation indicators among the hits above —
+// an explicit looting classification, a related-category naming repatriation, or a
+// significant-event label using theft/looting/repatriation vocabulary. "described_by_source"
+// (P1343) hits are deliberately excluded: that property just links to whatever encyclopedia
+// entry documents the item at all (used for virtually every well-documented artwork), so
+// treating its mere presence as a looting signal would flag almost everything and defeat the
+// purpose of a high-severity flag.
+const REPATRIATION_SIGNAL_RE = /\b(stolen|looted|claimed|repatriat)/i;
+
+function findWikidataRepatriationSignal(wikidataResult) {
+  const hits = wikidataResult.hits || [];
+  return hits.find(h =>
+    h.type === 'looting_classification' ||
+    (h.type === 'related_category' && /repatriat/i.test(h.label || '')) ||
+    (h.type === 'significant_event' && REPATRIATION_SIGNAL_RE.test(h.label || ''))
+  ) || null;
 }
 
 async function searchTavily(title, artist, signal) {
@@ -372,6 +402,44 @@ function computeConfidenceScore({ provenanceTimeline, riskFlags, authoritiesCons
   return score / 100;
 }
 
+// ── PRE-1970 CUSTODY GAP FLAG (non-Western-origin works) ──
+// Methodological context: the 1970 UNESCO Convention on the Means of Prohibiting and
+// Preventing the Illicit Import, Export and Transfer of Ownership of Cultural Property is the
+// field's accepted due-diligence cutoff. An unexplained custody gap straddling 1970 in a work
+// whose origin lies outside the traditional Western-museum-collecting countries is a
+// recognized red flag for colonial-era removal or antiquities trafficking — separate from,
+// and in addition to, the Nazi-era (1933-1945) screening this tool already does via the
+// watchlist domains. The goal is to surface candidate cases for museums in the country of
+// origin to pursue repatriation, identify where a royalty arrangement might be appropriate,
+// and document the custody chain in a form usable in restitution proceedings.
+//
+// This is a keyword heuristic over free-text fields (period/artist/Wikidata labels), not a
+// geographic classification system: it will miss unlisted regions and can mismatch ambiguous
+// terms (e.g. an artist surname that happens to match a place name). It exists to flag
+// candidates for human review, not to make a determination on its own.
+const NON_WESTERN_ORIGIN_RE = /\b(egypt\w*|gree\w*|ital\w*|africa\w*|asia\w*|latin america\w*|mesopotam\w*|maya\w*|aztec\w*|inca\w*|benin\w*|nigeria\w*|ethiopia\w*|peru\w*|mexic\w*|china|chinese|india\w*|cambodia\w*|khmer)\b/i;
+
+function detectsNonWesternOrigin({ period, artist, wikidata }) {
+  const haystack = [period, artist, ...((wikidata?.hits || []).map(h => h.label || ''))].filter(Boolean).join(' ');
+  return NON_WESTERN_ORIGIN_RE.test(haystack);
+}
+
+// Extracts 4-digit years from a free-text period string (Gemini writes things like
+// "1938–1941" or "c. 1920s"); a single year found is treated as an open-ended gap starting
+// there, since a bare start date with no listed end is itself part of the unexplained gap.
+function extractYears(periodStr) {
+  const matches = String(periodStr || '').match(/\b(1[5-9]\d{2}|20\d{2})\b/g);
+  return matches ? matches.map(Number) : [];
+}
+
+function gapCrosses1970(entry) {
+  const years = extractYears(entry.period);
+  if (!years.length) return false;
+  const start = Math.min(...years);
+  const end = Math.max(...years);
+  return years.length === 1 ? start <= 1970 : (start <= 1970 && end >= 1970);
+}
+
 function signPassport(artwork) {
   const signedAt = new Date().toISOString();
   const integrityHash = crypto.createHash('sha256').update(`${artwork.title}|${artwork.artist}|${signedAt}`).digest('hex');
@@ -385,7 +453,7 @@ function signPassport(artwork) {
 
 // ── PASSPORT SYNTHESIS (Gemini reasons over facts we already fetched) ──
 
-function buildContext({ title, artist, period, medium, price, tavily, met, aic, europeana, wiki, moma, wikidata }) {
+function buildContext({ title, artist, period, medium, price, tavily, met, aic, europeana, moma, wikidata }) {
   const section = (label, result) => {
     if (result.skipped) return `\n--- ${label} ---\nNot queried (no API key configured for this source).`;
     if (!result.hits.length) return `\n--- ${label} ---\nNo matching records found.`;
@@ -398,13 +466,12 @@ function buildContext({ title, artist, period, medium, price, tavily, met, aic, 
   lines.push(section('Supplementary: Art Institute of Chicago', aic));
   lines.push(section('Supplementary: MoMA (bundled open dataset)', moma));
   lines.push(section('Supplementary: Europeana', europeana));
-  lines.push(section('Supplementary: Wikipedia', wiki));
-  lines.push(section('Supplementary: Wikidata (structured facts)', wikidata));
+  lines.push(section('Supplementary: Wikidata (structured facts, incl. repatriation/looting signals)', wikidata));
   return lines.join('\n');
 }
 
 async function synthesizePassport(context, meta) {
-  const prompt = `You are an art provenance research assistant. You are given raw search results pulled from free public sources. The Tavily source is your main research engine — it is a cross-domain web search restricted to authoritative sites (museums, Interpol, UNESCO, loss registries, auction houses, the FBI, IFAR, Wikipedia) and should be your primary basis for the provenance timeline, looting alerts, and ownership records. The other sources are supplementary — use them to corroborate or add structured facts (exact dates, accession records) around what Tavily found. Build a structured provenance record using ONLY facts present in the sources below.
+  const prompt = `You are an art provenance research assistant. You are given raw search results pulled from free public sources. The Tavily source is your main research engine — it is a cross-domain web search restricted to authoritative sites (museums, Interpol, UNESCO, loss registries, auction houses, the FBI, IFAR, and government cultural-property authorities including the UK Gazette, the Greek Ministry of Culture, and Egypt's Ministry of Antiquities) and should be your primary basis for the provenance timeline, looting alerts, and ownership records. The other sources are supplementary — use them to corroborate or add structured facts (exact dates, accession records) around what Tavily found. Build a structured provenance record using ONLY facts present in the sources below.
 
 If the sources leave a period of ownership unaccounted for, add a timeline entry with "isGap": true and a "gapNote" explaining what is missing. A gap is itself a fact worth reporting.
 
@@ -491,7 +558,7 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
   const query = [title, artist].filter(Boolean).join(' ');
 
   // Stream per-source progress over SSE so a museum visitor on slow wifi sees which of the
-  // 7 sources has answered, instead of staring at one static spinner for 10-20s. Errors that
+  // 6 sources has answered, instead of staring at one static spinner for 10-20s. Errors that
   // happen before this point (validation, missing key) are still plain JSON below — only
   // once we commit to the event-stream content type do failures become 'error' events.
   res.writeHead(200, {
@@ -502,9 +569,11 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
   });
   const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
+  // Wikipedia was removed as a source: not credible enough for academic/professional
+  // provenance use compared to the Getty/museum/Wikidata sources already in this list.
   const SOURCE_LABELS = {
     tavily: 'Tavily', met: 'The Met Museum', aic: 'Art Institute of Chicago',
-    moma: 'MoMA', europeana: 'Europeana', wiki: 'Wikipedia', wikidata: 'Wikidata'
+    moma: 'MoMA', europeana: 'Europeana', wikidata: 'Wikidata'
   };
   for (const label of Object.values(SOURCE_LABELS)) send({ type: 'progress', name: label, status: 'searching' });
   const track = (key, promise) => promise.then(r => {
@@ -516,32 +585,31 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
   // fetch at once via the shared signal rather than letting the request hang indefinitely.
   // Individual source failures do NOT cancel their siblings — every searchX() already
   // degrades gracefully to a fallback result on its own error, so a flaky single source
-  // (e.g. Wikipedia timing out) must not blank out the other 6 independent sources.
+  // (e.g. Wikidata timing out) must not blank out the other 5 independent sources.
   const searchController = new AbortController();
   const searchTimeoutId = setTimeout(() => searchController.abort(), 30000);
   const signal = searchController.signal;
 
   try {
-    const [tavily, met, aic, europeana, wiki, moma, wikidata] = await Promise.all([
+    const [tavily, met, aic, europeana, moma, wikidata] = await Promise.all([
       track('tavily', searchTavily(title, artist, signal)),
       track('met', searchMet(query, signal)),
       track('aic', searchAIC(query, signal)),
       track('europeana', searchEuropeana(query, signal)),
-      track('wiki', searchWikipedia(query, signal)),
       track('moma', Promise.resolve(searchMoma(title, artist))),
       track('wikidata', searchWikidata(title, artist, signal))
     ]);
     clearTimeout(searchTimeoutId);
     send({ type: 'stage', stage: 'synthesizing' });
 
-    const authoritiesConsulted = [tavily, met, aic, moma, europeana, wiki, wikidata].map(r => ({
+    const authoritiesConsulted = [tavily, met, aic, moma, europeana, wikidata].map(r => ({
       name: r.name,
       domain: r.domain,
       response: r.response,
       sourceUrl: r.hits?.[0]?.url || null
     }));
 
-    const context = buildContext({ title, artist, period, medium, price, tavily, met, aic, europeana, wiki, moma, wikidata });
+    const context = buildContext({ title, artist, period, medium, price, tavily, met, aic, europeana, moma, wikidata });
     const draft = await synthesizePassport(context, { price });
 
     const riskFlags = [...(draft.riskFlags || [])];
@@ -553,6 +621,16 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
       }
     }
 
+    const wikidataSignal = findWikidataRepatriationSignal(wikidata);
+    if (wikidataSignal) {
+      riskFlags.push({
+        type: 'wikidata_repatriation_signal',
+        severity: 'high',
+        detail: `Repatriation or looting record found in Wikidata — verify with source country. (${wikidataSignal.label})`,
+        sourceUrl: wikidataSignal.url || wikidata.entityUrl || null
+      });
+    }
+
     const provenanceTimeline = draft.provenanceTimeline || [];
     if (provenanceTimeline.some(e => e.isGeneralKnowledge)) {
       riskFlags.push({
@@ -561,6 +639,18 @@ app.post('/api/verify', rateLimiter, async (req, res) => {
         detail: 'Part of this timeline is drawn from the AI\'s general historical knowledge rather than a live, cited source. Entries built this way are marked "General knowledge — not from live source" and are unverified.',
         sourceUrl: null
       });
+    }
+
+    if (detectsNonWesternOrigin({ period, artist, wikidata })) {
+      const crossingGap = provenanceTimeline.find(e => e.isGap && gapCrosses1970(e));
+      if (crossingGap) {
+        riskFlags.push({
+          type: 'pre1970_gap_non_western_origin',
+          severity: 'medium',
+          detail: `Provenance gap crosses 1970 UNESCO Convention — country of origin may have repatriation claim. (Gap period: ${crossingGap.period || 'undated'})`,
+          sourceUrl: null
+        });
+      }
     }
 
     const valuationAssessment = draft.valuationAssessment || {

@@ -653,7 +653,7 @@ footer{
     </div>
   </div>
   <div class="hero-stats fade-up" style="transition-delay:.4s">
-    <div class="stat"><div class="stat-num">7</div><div class="stat-label">Sources checked</div></div>
+    <div class="stat"><div class="stat-num">6</div><div class="stat-label">Sources checked</div></div>
     <div class="stat"><div class="stat-num">0</div><div class="stat-label">Sign-up required</div></div>
     <div class="stat"><div class="stat-num">3</div><div class="stat-label">Ways to search</div></div>
   </div>
@@ -678,7 +678,7 @@ footer{
     <div class="step fade-up" style="transition-delay:.16s">
       <div class="step-num">03</div>
       <div class="step-title">Ground</div>
-      <p class="step-desc">The Met, the Art Institute of Chicago, MoMA, Europeana, Wikipedia, and Wikidata's structured facts corroborate and fill in exact dates.</p>
+      <p class="step-desc">The Met, the Art Institute of Chicago, MoMA, Europeana, and Wikidata's structured facts — including repatriation and looting signals — corroborate and fill in exact dates.</p>
       <span class="step-tag">No-key APIs</span>
     </div>
     <div class="step fade-up" style="transition-delay:.24s">
@@ -767,7 +767,7 @@ footer{
     <!-- LOADING -->
     <div class="loading-box" id="loadingBox">
       <div class="spinner"></div>
-      <div class="loading-title" id="loadingTitle">Searching 7 sources…</div>
+      <div class="loading-title" id="loadingTitle">Searching 6 sources…</div>
       <div class="loading-list" id="loadingList"></div>
       <div class="loading-stall" id="loadingStall" style="display:none">Still searching…</div>
     </div>
@@ -912,7 +912,7 @@ function forceRefreshVerify(){
 }
 
 // ── LOADING PROGRESS (per-source list, streamed live over SSE from /api/verify) ──
-const SOURCE_ORDER=['Tavily','The Met Museum','Art Institute of Chicago','MoMA','Europeana','Wikipedia','Wikidata'];
+const SOURCE_ORDER=['Tavily','The Met Museum','Art Institute of Chicago','MoMA','Europeana','Wikidata'];
 function initLoadingList(){
   document.getElementById('loadingList').innerHTML=SOURCE_ORDER
     .map(name=>`<div class="loading-item" data-name="${name}"><span class="li-icon">⏳</span> Searching ${name}…</div>`)
@@ -923,7 +923,7 @@ function markSourceDone(name){
   if(el){el.classList.add('done');el.innerHTML=`<span class="li-icon">✓</span> ${name}`;}
 }
 function showLoading(){
-  document.getElementById('loadingTitle').textContent='Searching 7 sources…';
+  document.getElementById('loadingTitle').textContent='Searching 6 sources…';
   document.getElementById('loadingStall').style.display='none';
   initLoadingList();
   document.getElementById('loadingBox').style.display='block';
